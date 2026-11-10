@@ -1,0 +1,75 @@
+<html>
+<head>
+    <meta charset="utf-8">
+    <title>Trabalho CG - Reflexo e Transparencia</title>
+    <style>
+        /* tira a margem da pagina para o canvas ocupar a janela inteira */
+        body { margin: 0; overflow: hidden; }
+    </style>
+</head>
+<body>
+
+<!-- =====================================================================
+     CANVAS: e aqui que o WebGL desenha
+     ===================================================================== -->
+<canvas id="webgl-canvas"></canvas>
+
+<!-- =====================================================================
+     BIBLIOTECAS DA DISCIPLINA (pasta Common, copiadas do professor)
+     MV.js         -> vetores e matrizes (vec4, mat4, mult, lookAt, perspective...)
+     initShaders.js -> compila e liga os shaders escritos nas tags <script>
+     ===================================================================== -->
+<script type="text/javascript" src="Common/MV.js"></script>
+<script type="text/javascript" src="Common/initShaders.js"></script>
+
+<!-- =====================================================================
+     TEXTURAS (imagens escondidas, igual o professor faz)
+     O WebGL le a imagem direto destas tags com gl.texImage2D.
+     ===================================================================== -->
+<img id="texChao"      src="texturas/wood.jpg"   hidden alt="chao"/>
+<img id="texTriangulo" src="texturas/bricks.jpg" hidden alt="triangulo"/>
+<img id="texQuadrado"  src="texturas/tiles.jpg"  hidden alt="quadrado"/>
+<img id="texVidro"     src="texturas/metal.jpg"  hidden alt="vidro"/>
+
+<script>
+    // =====================================================================
+    // 1. CONTEXTO WEBGL 2
+    // =====================================================================
+    let canvas = document.getElementById("webgl-canvas");
+    canvas.width = window.innerWidth;     // canvas do tamanho da janela
+    canvas.height = window.innerHeight;
+
+    let gl = canvas.getContext("webgl2");
+    if (!gl) {
+        console.error("WebGL 2 not available");
+        document.body.innerHTML = "Este trabalho precisa de WebGL 2, que nao esta disponivel neste navegador.";
+    }
+
+    // =====================================================================
+    // 2. CONFIGURACOES GERAIS
+    // =====================================================================
+    gl.viewport(0, 0, canvas.width, canvas.height);
+    gl.clearColor(0.55, 0.70, 0.85, 1.0);  // cor de fundo (azul claro, tipo "ceu")
+    gl.enable(gl.DEPTH_TEST);              // teste de profundidade (objeto da frente esconde o de tras)
+
+    // =====================================================================
+    // 3. LOOP DE DESENHO
+    // =====================================================================
+    let render = function () {
+        gl.clear(gl.COLOR_BUFFER_BIT | gl.DEPTH_BUFFER_BIT);   // limpa cor e profundidade
+        requestAnimationFrame(render);                         // pede o proximo quadro
+    }
+
+    // so comeca a desenhar quando a pagina (e as imagens) terminarem de carregar
+    window.onload = function () {
+        console.log("Texturas carregadas:",
+            document.getElementById("texChao").naturalWidth,
+            document.getElementById("texTriangulo").naturalWidth,
+            document.getElementById("texQuadrado").naturalWidth,
+            document.getElementById("texVidro").naturalWidth);
+        render();
+    }
+</script>
+
+</body>
+</html>

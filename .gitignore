@@ -1,0 +1,18 @@
+# ---------------------------------------------------------------
+# Material de referencia (repositorio do professor e trabalho da
+# colega) - usado so para consulta, nao faz parte do trabalho
+# ---------------------------------------------------------------
+Referencias/
+
+# Enunciado em PDF (o texto do enunciado esta no README.md)
+trabalho2025cg.pdf
+
+# ---------------------------------------------------------------
+# Arquivos de editor / sistema operacional
+# ---------------------------------------------------------------
+.vscode/
+.idea/
+*.swp
+Thumbs.db
+desktop.ini
+.DS_Store
