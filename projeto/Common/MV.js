@@ -611,7 +611,7 @@ function lookAt( eye, at, up )
     var n = normalize( cross(v, up) ); // perpendicular vector
     var u = normalize( cross(n, v) );
     // "new" up vector
-    console.log(v,n,u);
+    // console.log(v,n,u);   // COMENTADO no trabalho: a camera flyby chama lookAt a cada quadro e enchia o console
     v = negate( v );
 
 
