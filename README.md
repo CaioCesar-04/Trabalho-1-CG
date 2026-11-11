@@ -22,14 +22,27 @@ Efeito de vidro escuro (com reflexo e transparência) em um plano, feito em WebG
 
 **Entrega e demonstração:** demonstração em tempo real do shader aplicado em um plano dentro de uma cena contendo pelo menos dois objetos (com o plano dividindo eles).
 
-## O que estamos fazendo
+## Como funciona
 
-- Uma cena com chão, um **triângulo** (pirâmide) de um lado e um **quadrado** (cubo) do outro, separados por um plano de **vidro escuro**.
-- O reflexo e o que se vê através do vidro são renderizados em **framebuffers**, em vários passos, como no shadow map visto em aula.
-- Um **clipping plane** define o que aparece em cada passo.
-- O ângulo de visão (Fresnel) controla o quanto o vidro reflete ou deixa ver através.
-- A transparência é controlada por um **uniform**, que vai do vidro fosco ao transparente.
-- O efeito funciona dos **dois lados** do vidro, e a câmera **flyby** permite andar pela cena.
+A cena tem um chão, uma pirâmide de um lado e um cubo do outro, separados por um vidro. Cada quadro é desenhado em 3 passes:
+
+1. **Reflexo:** a cena espelhada pelo plano do vidro é renderizada num framebuffer. O clipping plane mantém só o lado da câmera.
+2. **Transparência:** a cena é renderizada em outro framebuffer. O clipping plane mantém só o que está atrás do vidro.
+3. **Tela:** a cena inteira e o vidro, que junta as duas texturas com a sua textura própria. O peso do reflexo vem do ângulo de visão (Fresnel/Schlick) e do uniform `transparencia`.
+
+No código, as marcas `[R1]` a `[R6]` indicam onde cada requisito é cumprido.
+
+## Controles
+
+| Ação | Comando |
+|---|---|
+| Olhar ao redor | arrastar o mouse |
+| Andar / subir e descer | W A S D / Q E (Shift = mais rápido) |
+| Girar | setas |
+| Transparente ↔ reflexo | slider do vidro |
+| Distância dos objetos ao vidro | sliders do painel |
+| Testar o clipping na tela | C |
+| Ver só o reflexo / só a transparência no vidro | V |
 
 ## Como executar
 

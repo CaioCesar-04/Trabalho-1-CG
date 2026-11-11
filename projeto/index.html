@@ -3,58 +3,56 @@
     <meta charset="utf-8">
     <title>Trabalho CG - Reflexo e Transparencia</title>
     <style>
-        /* tira a margem da pagina para o canvas ocupar a janela inteira */
         body { margin: 0; overflow: hidden; }
-        /* painel de ajuda no canto da tela */
         #painel {
             position: absolute; top: 10px; left: 10px;
             background: rgba(0, 0, 0, 0.6); color: white;
             padding: 8px 12px; border-radius: 6px;
             font-family: sans-serif; font-size: 13px; line-height: 1.5;
         }
+        #painel input[type=range] { width: 100%; }
+        .extremos { display: flex; justify-content: space-between; font-size: 12px; }
     </style>
 </head>
 <body>
 
-<!-- =====================================================================
-     SHADERS DA CENA (usados para desenhar os objetos: cubo, piramide, chao)
-     Iluminacao de Phong (ambiente + difusa + especular) + textura.
-     ===================================================================== -->
+<!--
+    TRABALHO DE CG - REFLEXO E TRANSPARENCIA (WebGL 2 + GLSL)
+    Onde cada requisito esta no codigo (procure pelas marcas [R1] ... [R6]):
+      [R1] shaders proprios; reflexo e transparencia pelo angulo de visao -> fsVidro (Fresnel)
+      [R2] framebuffers renderizados em varios passes                     -> secao 6 e loop (passes 1, 2, 3)
+      [R3] transparencia controlada por uniform                            -> slider + uniform "transparencia"
+      [R4] textura padrao em todos os objetos, inclusive o vidro           -> tags <img> e secao 5
+      [R5] clipping plane, sem "if" escolhendo objetos                     -> fsCena (clipPlane) e desenharCena
+      [R6] camera flyby                                                    -> secao 9
+-->
 
-<!-- ---------- VERTEX SHADER DA CENA ----------
-     Roda uma vez para cada VERTICE.
-     Leva o vertice do espaco do objeto para o espaco do mundo (modelMatrix)
-     e depois para a tela (vpMatrix = projecao * visao). -->
+<!-- ===================== SHADERS DA CENA (chao, piramide, cubo) =====================
+     Phong + textura + clipping plane. Usados nos 3 passes. -->
 <script type="vertex" id="vsCena">
     #version 300 es
 
-    // atributos (dados de cada vertice, vindos dos buffers)
-    // layout(location = N) fixa o numero do atributo, assim ele e o mesmo
-    // em todos os programas de shader (vamos ter mais de um no trabalho)
-    layout(location = 0) in vec4 position;   // posicao do vertice (x,y,z,1)
-    layout(location = 1) in vec4 normal;     // normal do vertice (x,y,z,0)
-    layout(location = 2) in vec2 texCoord;   // coordenada de textura (u,v)
+    // layout(location) fixa o numero do atributo: igual nos dois programas (mesmos buffers)
+    layout(location = 0) in vec4 position;
+    layout(location = 1) in vec4 normal;
+    layout(location = 2) in vec2 texCoord;
 
-    uniform mat4 modelMatrix;   // posiciona/gira/escala o objeto no mundo
-    uniform mat4 vpMatrix;      // projecao * visao (camera)
+    uniform mat4 modelMatrix;   // objeto -> mundo
+    uniform mat4 vpMatrix;      // mundo -> tela (projecao * visao)
 
-    // saidas: vao para o fragment shader (interpoladas entre os vertices)
-    out vec3 worldPos;      // posicao do ponto no mundo
-    out vec3 worldNormal;   // normal no mundo
-    out vec2 fTexCoord;     // coordenada de textura
+    out vec3 worldPos;
+    out vec3 worldNormal;
+    out vec2 fTexCoord;
 
     void main() {
-        vec4 posMundo = modelMatrix * position;      // objeto -> mundo
+        vec4 posMundo = modelMatrix * position;
         worldPos    = posMundo.xyz;
-        worldNormal = (modelMatrix * normal).xyz;    // normal.w = 0 -> so gira, nao translada
+        worldNormal = (modelMatrix * normal).xyz;   // w = 0: so gira (nenhuma escala deforma as normais)
         fTexCoord   = texCoord;
-        gl_Position = vpMatrix * posMundo;           // mundo -> tela
+        gl_Position = vpMatrix * posMundo;
     }
 </script>
 
-<!-- ---------- FRAGMENT SHADER DA CENA ----------
-     Roda uma vez para cada PIXEL do objeto.
-     Calcula a cor: textura * luz (Phong). -->
 <script type="fragment" id="fsCena">
     #version 300 es
     precision highp float;
@@ -63,42 +61,32 @@
     in vec3 worldNormal;
     in vec2 fTexCoord;
 
-    uniform sampler2D textureMap;    // textura do objeto
-    uniform vec3  lightPosition;     // posicao da luz no mundo
-    uniform vec3  lightIntensity;    // cor/intensidade da luz
-    uniform vec3  ambientLight;      // luz ambiente (para nada ficar 100% preto)
-    uniform vec3  camPos;            // posicao da camera (para o brilho especular)
-    uniform float shininess;         // expoente do especular (maior = brilho menor e mais concentrado)
-
-    // CLIPPING PLANE: plano (a, b, c, d) da equacao  a*x + b*y + c*z + d = 0
-    // (a,b,c) = normal do plano. O lado para onde a normal aponta e o lado que FICA.
-    uniform vec4  clipPlane;
+    uniform sampler2D textureMap;    // [R4] textura do objeto
+    uniform vec3  lightPosition;
+    uniform vec3  lightIntensity;
+    uniform vec3  ambientLight;
+    uniform vec3  camPos;
+    uniform float shininess;
+    uniform vec4  clipPlane;         // [R5] plano (a,b,c,d):  a*x + b*y + c*z + d = 0
 
     out vec4 fragColor;
 
     void main() {
-        // ---------- CLIPPING PLANE ----------
-        // dot(plano, (x,y,z,1)) = a*x + b*y + c*z + d = distancia (com sinal) do ponto ao plano
-        //   > 0 : ponto do lado da normal  -> fica
-        //   < 0 : ponto do outro lado       -> descartado (o pixel nao e desenhado)
-        // O teste e GEOMETRICO, pixel a pixel. Nao escolhe objeto: um mesmo objeto
-        // (ex.: o chao) pode ficar metade visivel e metade cortado.
-        float distancia = dot(clipPlane, vec4(worldPos, 1.0));
-        if (distancia < 0.0) discard;
+        // [R5] CLIPPING PLANE: dot(plano, (x,y,z,1)) = distancia com sinal do ponto ao plano.
+        // Negativa = lado cortado. O teste e por pixel (geometrico), nao por objeto:
+        // o chao, por exemplo, fica cortado ao meio.
+        if (dot(clipPlane, vec4(worldPos, 1.0)) < 0.0) discard;
 
-        vec3 N = normalize(worldNormal);              // normal (unitaria)
-        vec3 L = normalize(lightPosition - worldPos); // direcao: ponto -> luz
-        vec3 V = normalize(camPos - worldPos);        // direcao: ponto -> camera
-        vec3 R = reflect(-L, N);                      // raio da luz refletido na superficie
+        // Phong: ambiente + difusa + especular
+        vec3 N = normalize(worldNormal);
+        vec3 L = normalize(lightPosition - worldPos);   // ponto -> luz
+        vec3 V = normalize(camPos - worldPos);          // ponto -> camera
+        vec3 R = reflect(-L, N);
 
-        // difusa: quanto a superficie esta virada para a luz (cosseno entre N e L)
-        float difusa = max(dot(N, L), 0.0);
-        // especular: quanto o raio refletido aponta para a camera
+        float difusa    = max(dot(N, L), 0.0);
         float especular = pow(max(dot(R, V), 0.0), shininess);
 
         vec3 corTextura = texture(textureMap, fTexCoord).rgb;
-
-        // Phong: textura * (ambiente + difusa) + brilho especular
         vec3 cor = corTextura * (ambientLight + lightIntensity * difusa)
                  + lightIntensity * especular * 0.5;
 
@@ -106,125 +94,125 @@
     }
 </script>
 
-
-<!-- =====================================================================
-     SHADERS DO VIDRO (usados so para desenhar o vidro, no passe final)
-     O vidro nao "ilumina um objeto": ele LE as texturas que os passes
-     anteriores gravaram nos framebuffers e mostra na posicao certa.
-     ===================================================================== -->
-
-<!-- ---------- VERTEX SHADER DO VIDRO ---------- -->
+<!-- ===================== SHADERS DO VIDRO =====================
+     Nao ilumina objeto: junta as texturas dos framebuffers (reflexo e transparencia)
+     com a textura do vidro, pesando pelo angulo de visao. Usados so no passe final. -->
 <script type="vertex" id="vsVidro">
     #version 300 es
 
-    // mesmos numeros de atributo do shader da cena (mesmos buffers)
     layout(location = 0) in vec4 position;
-    layout(location = 2) in vec2 texCoord;   // coordenada da textura propria do vidro
+    layout(location = 1) in vec4 normal;
+    layout(location = 2) in vec2 texCoord;
 
     uniform mat4 modelMatrix;
     uniform mat4 vpMatrix;
 
-    // posicao do vertice na tela ANTES da divisao por w ("clip space").
-    // E a mesma ideia do "lposition" do shadow map do professor.
-    out vec4 posTela;
+    out vec4 posTela;       // posicao antes da divisao por w (como o "lposition" do shadow map)
     out vec2 fTexCoord;
+    out vec3 worldPos;
+    out vec3 worldNormal;
 
     void main() {
         vec4 posMundo = modelMatrix * position;
-        posTela = vpMatrix * posMundo;
-        fTexCoord = texCoord;
+        worldPos    = posMundo.xyz;
+        worldNormal = (modelMatrix * normal).xyz;
+        posTela     = vpMatrix * posMundo;
+        fTexCoord   = texCoord;
         gl_Position = posTela;
     }
 </script>
 
-<!-- ---------- FRAGMENT SHADER DO VIDRO ---------- -->
 <script type="fragment" id="fsVidro">
     #version 300 es
     precision highp float;
 
     in vec4 posTela;
     in vec2 fTexCoord;
+    in vec3 worldPos;
+    in vec3 worldNormal;
 
-    // textura gravada no passe de TRANSPARENCIA (framebuffer):
-    // a cena vista pela camera, so com o que esta ATRAS do vidro
-    uniform sampler2D mapaTransparencia;
+    uniform float transparencia;           // [R3] 1 = transparente (slider a esquerda), 0 = espelho (a direita)
+    uniform vec3  camPos;
+    uniform sampler2D mapaReflexo;         // [R2] passe 1: cena espelhada pelo vidro
+    uniform sampler2D mapaTransparencia;   // [R2] passe 2: cena atras do vidro
+    uniform sampler2D texturaVidro;        // [R4] textura padrao do vidro (metal.jpg)
+    uniform int modoVidro;                 // tecla V: 0 = resultado, 1 = so reflexo, 2 = so transparencia
 
-    // textura PADRAO do proprio vidro (metal.jpg): as "manchas" do vidro
-    uniform sampler2D texturaVidro;
-
-    // cor do vidro escuro: multiplicar por ela escurece (e azula um pouco)
-    // o que se ve atraves do vidro. (1,1,1) seria um vidro sem cor nenhuma.
-    const vec3 COR_VIDRO_ESCURO = vec3(0.45, 0.50, 0.55);
-
-    // quanto as manchas da textura aparecem. A imagem metal.jpg e quase
-    // branca, entao 2.0 dobra a diferenca dela para o branco (realca as manchas)
-    const float FORCA_MANCHAS = 2.0;
+    const vec3  COR_VIDRO_ESCURO = vec3(0.45, 0.50, 0.55);   // escurece o que se ve atraves (vidro fume)
+    const float FORCA_MANCHAS    = 2.0;                       // realca as manchas (a textura e quase branca)
 
     out vec4 fragColor;
 
     void main() {
-        // ---------- COORDENADA PROJETIVA (igual ao shadow map) ----------
-        // posTela.xy / posTela.w -> posicao na tela de -1 a 1 (divisao perspectiva)
-        // * 0.5 + 0.5            -> de 0 a 1, que e o intervalo da coordenada de textura
-        // Assim, cada pixel do vidro le na textura o pixel que esta "atras" dele.
+        // [R2] coordenada projetiva, igual ao shadow map: posicao na tela (-1..1) -> textura (0..1).
+        // Os passes usaram a mesma camera, entao cada pixel do vidro le o pixel certo das texturas.
         vec2 uvTela = 0.5 * posTela.xy / posTela.w + 0.5;
 
-        // ---------- O QUE SE VE ATRAVES DO VIDRO ----------
-        // a "foto" do outro lado, escurecida pela cor do vidro
+        vec3 refletido   = texture(mapaReflexo, uvTela).rgb;
         vec3 transmitido = texture(mapaTransparencia, uvTela).rgb * COR_VIDRO_ESCURO;
+        vec3 manchas     = clamp(mix(vec3(1.0), texture(texturaVidro, fTexCoord).rgb, FORCA_MANCHAS), 0.0, 1.0);
 
-        // ---------- TEXTURA PADRAO DO VIDRO ----------
-        // mix(branco, textura, FORCA): onde a textura e branca da 1 (nao muda nada),
-        // onde ela e cinza da < 1 (escurece um pouco = mancha)
-        vec3 manchas = clamp(mix(vec3(1.0), texture(texturaVidro, fTexCoord).rgb, FORCA_MANCHAS), 0.0, 1.0);
+        // [R1] ANGULO DE VISAO: cosseno entre a normal e a direcao da camera
+        // (1 = olhando de frente, 0 = olhando rente). faceforward vira a normal
+        // para o lado da camera, assim o vidro funciona dos 2 lados.
+        vec3 V = normalize(camPos - worldPos);
+        vec3 N = normalize(worldNormal);
+        N = faceforward(N, -V, N);
+        float cosTheta = max(dot(N, V), 0.0);
 
-        // cor final (por enquanto so transparencia; o reflexo entra nas etapas 7 e 8)
-        vec3 cor = transmitido * manchas;
+        // [R1] + [R3] FRESNEL (Schlick): F = fracao refletida, (1 - F) = fracao transmitida.
+        // F0 (olhando de frente) vem do slider; olhando de lado F tende a 1 (vira espelho).
+        float F0 = 1.0 - transparencia;
+        float F  = F0 + (1.0 - F0) * pow(1.0 - cosTheta, 5.0);
+
+        vec3 cor = mix(transmitido, refletido, F) * manchas;
+
+        // modos de teste (tecla V): mostram cada passe sozinho (escolhe a cor, nao objetos)
+        if (modoVidro == 1) cor = refletido;
+        if (modoVidro == 2) cor = texture(mapaTransparencia, uvTela).rgb;
 
         fragColor = vec4(cor, 1.0);
     }
 </script>
 
 
-<!-- =====================================================================
-     CANVAS: e aqui que o WebGL desenha
-     ===================================================================== -->
 <canvas id="webgl-canvas"></canvas>
 
-<!-- PAINEL: instrucoes da camera (nas proximas etapas recebe os controles do vidro) -->
+<!-- PAINEL: controles e instrucoes -->
 <div id="painel">
+    <b>Vidro</b> &nbsp; (uniform transparencia = <span id="textoTransparencia"></span>)<br>
+    <input type="range" id="sliderVidro" min="0" max="1" step="0.01" value="0.3">
+    <div class="extremos"><span>&larr; Transparente</span><span>Reflexo &rarr;</span></div>
+    Distancia do cubo ao vidro: <span id="textoDistCubo"></span><br>
+    <input type="range" id="sliderDistCubo" min="0" max="8" step="0.1" value="3">
+    Distancia da piramide ao vidro: <span id="textoDistPiramide"></span><br>
+    <input type="range" id="sliderDistPiramide" min="0" max="8" step="0.1" value="3">
+    <br>
     <b>Camera flyby</b><br>
     Arrastar o mouse: olhar ao redor<br>
     W / S: frente / tras &nbsp; A / D: esquerda / direita<br>
     Q / E: descer / subir &nbsp; Setas: girar &nbsp; Shift: mais rapido<br>
     <br>
-    <b>Teste do clipping plane</b><br>
-    C: trocar modo &rarr; <span id="textoModoClip">desligado (cena inteira)</span>
+    <b>Testes</b><br>
+    C: clipping na tela &rarr; <span id="textoModoClip">desligado (cena inteira)</span><br>
+    V: o que o vidro mostra &rarr; <span id="textoModoVidro">resultado</span>
 </div>
 
-<!-- =====================================================================
-     BIBLIOTECAS DA DISCIPLINA (pasta Common, copiadas do professor)
-     MV.js          -> vetores e matrizes (vec4, mat4, mult, lookAt, perspective...)
-     initShaders.js -> compila e liga os shaders escritos nas tags <script>
-     ===================================================================== -->
+<!-- Bibliotecas da disciplina (copiadas do professor):
+     MV.js = vetores e matrizes; initShaders.js = compila os shaders das tags <script> -->
 <script type="text/javascript" src="Common/MV.js"></script>
 <script type="text/javascript" src="Common/initShaders.js"></script>
 
-<!-- =====================================================================
-     TEXTURAS (imagens escondidas, igual o professor faz)
-     O WebGL le a imagem direto destas tags com gl.texImage2D.
-     ===================================================================== -->
+<!-- [R4] Texturas padrao dos objetos (lidas pelo WebGL direto das tags, como o professor faz) -->
 <img id="texChao"      src="texturas/wood.jpg"   hidden alt="chao"/>
 <img id="texTriangulo" src="texturas/bricks.jpg" hidden alt="triangulo"/>
 <img id="texQuadrado"  src="texturas/tiles.jpg"  hidden alt="quadrado"/>
 <img id="texVidro"     src="texturas/metal.jpg"  hidden alt="vidro"/>
 
 <script>
-    // =====================================================================
-    // 1. CONTEXTO WEBGL 2
-    // =====================================================================
+    // ===================== 1. CONTEXTO WEBGL 2 =====================
     let canvas = document.getElementById("webgl-canvas");
-    canvas.width = window.innerWidth;     // canvas do tamanho da janela
+    canvas.width = window.innerWidth;
     canvas.height = window.innerHeight;
 
     let gl = canvas.getContext("webgl2");
@@ -234,72 +222,51 @@
     }
 
     gl.viewport(0, 0, canvas.width, canvas.height);
-    gl.clearColor(0.55, 0.70, 0.85, 1.0);       // cor de fundo (azul claro, tipo "ceu")
-    gl.enable(gl.DEPTH_TEST);                   // objeto da frente esconde o de tras
-    gl.pixelStorei(gl.UNPACK_FLIP_Y_WEBGL, true); // imagem de cabeca para cima (igual o professor)
+    gl.clearColor(0.55, 0.70, 0.85, 1.0);           // fundo azul (ceu)
+    gl.enable(gl.DEPTH_TEST);
+    gl.pixelStorei(gl.UNPACK_FLIP_Y_WEBGL, true);   // imagem de cabeca para cima
 
-    // =====================================================================
-    // 2. PROGRAMAS DE SHADER
-    // =====================================================================
-    // dois programas, igual o cubeshadow do professor (sprogram e program):
-    // programaCena: desenha os objetos (chao, piramide, cubo) em todos os passes
-    // programaVidro: desenha o vidro, lendo as texturas dos framebuffers
+    // ===================== 2. PROGRAMAS DE SHADER [R1] =====================
+    // Dois programas, como no cubeshadow do professor:
+    // programaCena desenha os objetos nos 3 passes; programaVidro desenha o vidro no passe final.
     let programaCena  = initShaders(gl, "vsCena",  "fsCena");
     let programaVidro = initShaders(gl, "vsVidro", "fsVidro");
     gl.useProgram(programaCena);
 
-    // =====================================================================
-    // 3. GEOMETRIA
-    // Igual o professor: tudo vai para os MESMOS arrays (um por atributo).
-    // Cada objeto guarda onde comeca e quantos vertices tem, para depois
-    // desenhar com gl.drawArrays(gl.TRIANGLES, inicio, total).
-    // =====================================================================
+    // ===================== 3. GEOMETRIA =====================
+    // Como nos exemplos do professor: todos os objetos nos mesmos arrays, e cada
+    // um guarda {inicio, total} para gl.drawArrays(gl.TRIANGLES, inicio, total).
     let positionArray = [];
     let normalArray   = [];
     let texCoordArray = [];
 
-    // coordenadas de textura dos 4 cantos de uma face quadrada
-    // (a = baixo-esquerda, b = baixo-direita, c = cima-direita, d = cima-esquerda)
-    let texCoord = [
-        vec2(0, 0),
-        vec2(1, 0),
-        vec2(1, 1),
-        vec2(0, 1)
-    ];
+    // texCoord dos cantos de uma face: baixo-esq, baixo-dir, cima-dir, cima-esq
+    let texCoord = [vec2(0, 0), vec2(1, 0), vec2(1, 1), vec2(0, 1)];
 
-    // multiplica a coordenada de textura por "repete":
-    // repete = 1 -> imagem aparece 1 vez na face
-    // repete = 5 -> imagem aparece 5x5 vezes (usado no chao, que e grande)
+    // repete > 1 faz a textura se repetir na face (usado no chao)
     function coordTextura(i, repete) {
         return vec2(texCoord[i][0] * repete, texCoord[i][1] * repete);
     }
 
-    // normal de uma face a partir de 3 vertices (a, b, c) em sentido ANTI-HORARIO
-    // olhando de FORA: cross(b-a, c-b) aponta para fora do objeto
+    // vertices em sentido anti-horario vistos de fora -> cross(b-a, c-b) aponta para fora
     function calcularNormal(pa, pb, pc) {
-        let lado1  = subtract(pb, pa);
-        let lado2  = subtract(pc, pb);
-        let normal = normalize(cross(lado1, lado2));
-        normal[3] = 0;   // w = 0: normal e uma DIRECAO, nao um ponto
+        let normal = normalize(cross(subtract(pb, pa), subtract(pc, pb)));
+        normal[3] = 0;   // w = 0: direcao, nao ponto
         return normal;
     }
 
-    // quad(a,b,c,d): face QUADRADA com 2 triangulos (a,b,c) e (a,c,d)
+    // face quadrada = 2 triangulos (a,b,c) e (a,c,d)
     function quad(v, a, b, c, d, repete = 1) {
         let normal = calcularNormal(v[a], v[b], v[c]);
-
-        // triangulo 1: a, b, c
         positionArray.push(v[a]); normalArray.push(normal); texCoordArray.push(coordTextura(0, repete));
         positionArray.push(v[b]); normalArray.push(normal); texCoordArray.push(coordTextura(1, repete));
         positionArray.push(v[c]); normalArray.push(normal); texCoordArray.push(coordTextura(2, repete));
-        // triangulo 2: a, c, d
         positionArray.push(v[a]); normalArray.push(normal); texCoordArray.push(coordTextura(0, repete));
         positionArray.push(v[c]); normalArray.push(normal); texCoordArray.push(coordTextura(2, repete));
         positionArray.push(v[d]); normalArray.push(normal); texCoordArray.push(coordTextura(3, repete));
     }
 
-    // triangulo(a,b,c): face TRIANGULAR (usada nas laterais da piramide)
-    // textura: a = baixo-esquerda, b = baixo-direita, c = ponta de cima (meio)
+    // face triangular (laterais da piramide): a ponta usa o meio do topo da textura
     function triangulo(v, a, b, c) {
         let normal = calcularNormal(v[a], v[b], v[c]);
         positionArray.push(v[a]); normalArray.push(normal); texCoordArray.push(vec2(0.0, 0.0));
@@ -307,120 +274,88 @@
         positionArray.push(v[c]); normalArray.push(normal); texCoordArray.push(vec2(0.5, 1.0));
     }
 
-    // ---------- CUBO (o "quadrado") ----------
-    // cubo de lado 2 centrado na origem (de -1 a 1)
+    // ----- CUBO (o "quadrado"): lado 2, centrado na origem -----
     let verticesCubo = [
-        vec4(-1, -1,  1, 1),   // 0
-        vec4(-1,  1,  1, 1),   // 1
-        vec4( 1,  1,  1, 1),   // 2
-        vec4( 1, -1,  1, 1),   // 3
-        vec4(-1, -1, -1, 1),   // 4
-        vec4(-1,  1, -1, 1),   // 5
-        vec4( 1,  1, -1, 1),   // 6
-        vec4( 1, -1, -1, 1)    // 7
+        vec4(-1, -1,  1, 1), vec4(-1,  1,  1, 1), vec4( 1,  1,  1, 1), vec4( 1, -1,  1, 1),   // 0..3 (z = +1)
+        vec4(-1, -1, -1, 1), vec4(-1,  1, -1, 1), vec4( 1,  1, -1, 1), vec4( 1, -1, -1, 1)    // 4..7 (z = -1)
     ];
-    let geoCubo = { inicio: positionArray.length };   // onde o cubo comeca no buffer
-    quad(verticesCubo, 0, 3, 2, 1);   // frente   (z = +1)
-    quad(verticesCubo, 3, 7, 6, 2);   // direita  (x = +1)
-    quad(verticesCubo, 7, 4, 5, 6);   // tras     (z = -1)
-    quad(verticesCubo, 4, 0, 1, 5);   // esquerda (x = -1)
-    quad(verticesCubo, 1, 2, 6, 5);   // cima     (y = +1)
-    quad(verticesCubo, 4, 7, 3, 0);   // baixo    (y = -1)
-    geoCubo.total = positionArray.length - geoCubo.inicio;   // 6 faces * 6 vertices = 36
+    let geoCubo = { inicio: positionArray.length };
+    quad(verticesCubo, 0, 3, 2, 1);   // frente
+    quad(verticesCubo, 3, 7, 6, 2);   // direita
+    quad(verticesCubo, 7, 4, 5, 6);   // tras
+    quad(verticesCubo, 4, 0, 1, 5);   // esquerda
+    quad(verticesCubo, 1, 2, 6, 5);   // cima
+    quad(verticesCubo, 4, 7, 3, 0);   // baixo
+    geoCubo.total = positionArray.length - geoCubo.inicio;
 
-    // ---------- PIRAMIDE (o "triangulo") ----------
-    // base quadrada no chao (y = 0) de -1 a 1, ponta em y = 2
+    // ----- PIRAMIDE (o "triangulo"): base de -1 a 1 em y = 0, ponta em y = 2 -----
     let verticesPiramide = [
-        vec4(-1, 0,  1, 1),   // 0 base frente-esquerda
-        vec4( 1, 0,  1, 1),   // 1 base frente-direita
-        vec4( 1, 0, -1, 1),   // 2 base tras-direita
-        vec4(-1, 0, -1, 1),   // 3 base tras-esquerda
-        vec4( 0, 2,  0, 1)    // 4 ponta
+        vec4(-1, 0,  1, 1), vec4( 1, 0,  1, 1), vec4( 1, 0, -1, 1), vec4(-1, 0, -1, 1),   // 0..3 base
+        vec4( 0, 2,  0, 1)                                                                // 4 ponta
     ];
     let geoPiramide = { inicio: positionArray.length };
-    triangulo(verticesPiramide, 0, 1, 4);   // lateral frente   (z+)
-    triangulo(verticesPiramide, 1, 2, 4);   // lateral direita  (x+)
-    triangulo(verticesPiramide, 2, 3, 4);   // lateral tras     (z-)
-    triangulo(verticesPiramide, 3, 0, 4);   // lateral esquerda (x-)
+    triangulo(verticesPiramide, 0, 1, 4);
+    triangulo(verticesPiramide, 1, 2, 4);
+    triangulo(verticesPiramide, 2, 3, 4);
+    triangulo(verticesPiramide, 3, 0, 4);
     quad(verticesPiramide, 0, 3, 2, 1);     // base (virada para baixo)
-    geoPiramide.total = positionArray.length - geoPiramide.inicio;   // 4*3 + 6 = 18
+    geoPiramide.total = positionArray.length - geoPiramide.inicio;
 
-    // ---------- CHAO ----------
-    // quadrado deitado no plano XZ (y = 0), de -1 a 1 (a escala aumenta depois)
-    let verticesChao = [
-        vec4(-1, 0,  1, 1),   // 0
-        vec4( 1, 0,  1, 1),   // 1
-        vec4( 1, 0, -1, 1),   // 2
-        vec4(-1, 0, -1, 1)    // 3
-    ];
+    // ----- CHAO: quadrado no plano XZ (y = 0), normal para cima, textura repetida 5x5 -----
+    let verticesChao = [vec4(-1, 0, 1, 1), vec4(1, 0, 1, 1), vec4(1, 0, -1, 1), vec4(-1, 0, -1, 1)];
     let geoChao = { inicio: positionArray.length };
-    quad(verticesChao, 0, 1, 2, 3, 5);      // normal para cima, textura repetida 5x5
-    geoChao.total = positionArray.length - geoChao.inicio;   // 6
+    quad(verticesChao, 0, 1, 2, 3, 5);
+    geoChao.total = positionArray.length - geoChao.inicio;
 
-    // ---------- VIDRO ----------
-    // quadrado em pe no plano XY (z = 0), de -1 a 1, normal +z
-    // (depois a modelMatrix gira ele para ficar no plano x = 0)
-    let verticesVidro = [
-        vec4(-1, -1, 0, 1),   // 0
-        vec4( 1, -1, 0, 1),   // 1
-        vec4( 1,  1, 0, 1),   // 2
-        vec4(-1,  1, 0, 1)    // 3
-    ];
+    // ----- VIDRO: quadrado em pe no plano XY (z = 0), normal +z -----
+    let verticesVidro = [vec4(-1, -1, 0, 1), vec4(1, -1, 0, 1), vec4(1, 1, 0, 1), vec4(-1, 1, 0, 1)];
     let geoVidro = { inicio: positionArray.length };
     quad(verticesVidro, 0, 1, 2, 3);
-    geoVidro.total = positionArray.length - geoVidro.inicio;   // 6
+    geoVidro.total = positionArray.length - geoVidro.inicio;
 
-    // =====================================================================
-    // 4. BUFFERS (envia os arrays para a GPU)
-    // Um buffer por atributo, igual o professor.
-    // O numero do atributo (location) e o mesmo do layout(location = N) do shader.
-    // =====================================================================
+    // ===================== 4. BUFFERS =====================
+    // Um buffer por atributo (como o professor); locations = layout(location) dos shaders.
     let positionBuffer = gl.createBuffer();
     gl.bindBuffer(gl.ARRAY_BUFFER, positionBuffer);
     gl.bufferData(gl.ARRAY_BUFFER, flatten(positionArray), gl.STATIC_DRAW);
-    let positionLoc = gl.getAttribLocation(programaCena, "position");   // = 0
-    gl.vertexAttribPointer(positionLoc, 4, gl.FLOAT, false, 0, 0);       // 4 floats por vertice
+    let positionLoc = gl.getAttribLocation(programaCena, "position");   // 0
+    gl.vertexAttribPointer(positionLoc, 4, gl.FLOAT, false, 0, 0);
     gl.enableVertexAttribArray(positionLoc);
 
     let normalBuffer = gl.createBuffer();
     gl.bindBuffer(gl.ARRAY_BUFFER, normalBuffer);
     gl.bufferData(gl.ARRAY_BUFFER, flatten(normalArray), gl.STATIC_DRAW);
-    let normalLoc = gl.getAttribLocation(programaCena, "normal");       // = 1
+    let normalLoc = gl.getAttribLocation(programaCena, "normal");       // 1
     gl.vertexAttribPointer(normalLoc, 4, gl.FLOAT, false, 0, 0);
     gl.enableVertexAttribArray(normalLoc);
 
     let texCoordBuffer = gl.createBuffer();
     gl.bindBuffer(gl.ARRAY_BUFFER, texCoordBuffer);
     gl.bufferData(gl.ARRAY_BUFFER, flatten(texCoordArray), gl.STATIC_DRAW);
-    let texCoordLoc = gl.getAttribLocation(programaCena, "texCoord");   // = 2
-    gl.vertexAttribPointer(texCoordLoc, 2, gl.FLOAT, false, 0, 0);       // 2 floats por vertice
+    let texCoordLoc = gl.getAttribLocation(programaCena, "texCoord");   // 2
+    gl.vertexAttribPointer(texCoordLoc, 2, gl.FLOAT, false, 0, 0);
     gl.enableVertexAttribArray(texCoordLoc);
 
-    // =====================================================================
-    // 5. TEXTURAS
-    // Cada textura fica presa em uma "unidade de textura" (TEXTURE0, 1, 2...).
-    // Para trocar a textura de um objeto basta dizer ao shader qual unidade
-    // usar: gl.uniform1i(textureMapLoc, unidade).
-    // =====================================================================
+    // ===================== 5. TEXTURAS [R4] =====================
+    // Cada textura fica numa unidade (TEXTURE0, 1, ...); o objeto escolhe a sua com uniform1i.
     const UNIDADE_CHAO      = 0;   // wood.jpg
     const UNIDADE_TRIANGULO = 1;   // bricks.jpg
     const UNIDADE_QUADRADO  = 2;   // tiles.jpg
     const UNIDADE_VIDRO     = 3;   // metal.jpg
 
-    // mesma sequencia de comandos que o professor usa no CubeTextured.html
+    // mesmos comandos do CubeTextured.html do professor
     function configurarTextura(idImagem, unidade) {
         let image = document.getElementById(idImagem);
         let texture = gl.createTexture();
-        gl.activeTexture(gl.TEXTURE0 + unidade);          // escolhe a unidade
+        gl.activeTexture(gl.TEXTURE0 + unidade);
         gl.bindTexture(gl.TEXTURE_2D, texture);
-        gl.texImage2D(gl.TEXTURE_2D, 0, gl.RGB, gl.RGB, gl.UNSIGNED_BYTE, image);  // envia a imagem
-        gl.generateMipmap(gl.TEXTURE_2D);                 // versoes menores da imagem (para longe)
-        gl.texParameteri(gl.TEXTURE_2D, gl.TEXTURE_WRAP_S, gl.REPEAT);   // repete a textura
+        gl.texImage2D(gl.TEXTURE_2D, 0, gl.RGB, gl.RGB, gl.UNSIGNED_BYTE, image);
+        gl.generateMipmap(gl.TEXTURE_2D);
+        gl.texParameteri(gl.TEXTURE_2D, gl.TEXTURE_WRAP_S, gl.REPEAT);
         gl.texParameteri(gl.TEXTURE_2D, gl.TEXTURE_WRAP_T, gl.REPEAT);
-        gl.texParameteri(gl.TEXTURE_2D, gl.TEXTURE_MIN_FILTER, gl.LINEAR_MIPMAP_LINEAR); // trilinear
+        gl.texParameteri(gl.TEXTURE_2D, gl.TEXTURE_MIN_FILTER, gl.LINEAR_MIPMAP_LINEAR);   // trilinear
         gl.texParameteri(gl.TEXTURE_2D, gl.TEXTURE_MAG_FILTER, gl.LINEAR);
-        // filtro anisotropico: deixa a textura nitida vista de lado (ex.: o chao)
-        const ext = gl.getExtension("EXT_texture_filter_anisotropic");
+        const ext = gl.getExtension("EXT_texture_filter_anisotropic");   // nitidez vista de lado
         if (ext) {
             const max = gl.getParameter(ext.MAX_TEXTURE_MAX_ANISOTROPY_EXT);
             gl.texParameterf(gl.TEXTURE_2D, ext.TEXTURE_MAX_ANISOTROPY_EXT, max);
@@ -428,38 +363,29 @@
         return texture;
     }
 
-    // =====================================================================
-    // 6. FRAMEBUFFERS (renderizar a cena numa TEXTURA, em vez da tela)
-    // Mesma montagem do shadow map do professor (cubeshadow.html):
-    //   textura de cor (COLOR_ATTACHMENT0) + renderbuffer de profundidade
-    //   (DEPTH_ATTACHMENT), presos num framebuffer.
-    // O tamanho e o mesmo do canvas: assim cada pixel da tela corresponde
-    // a um pixel da textura.
-    // =====================================================================
-    const UNIDADE_TRANSPARENCIA = 4;   // textura do passe de transparencia
-    // (a unidade 5 vai ser a do reflexo, na etapa 7)
+    // ===================== 6. FRAMEBUFFERS [R2] =====================
+    // Montagem igual ao shadow map do professor: textura de cor + renderbuffer de
+    // profundidade. Tamanho = canvas, para cada pixel da tela ter o seu pixel na textura.
+    const UNIDADE_TRANSPARENCIA = 4;
+    const UNIDADE_REFLEXO       = 5;
 
     function criarFramebuffer(unidade) {
         let largura = canvas.width;
         let altura  = canvas.height;
 
-        // textura de cor: e aqui que a cena vai ser "fotografada"
         let textura = gl.createTexture();
         gl.activeTexture(gl.TEXTURE0 + unidade);
         gl.bindTexture(gl.TEXTURE_2D, textura);
-        gl.texImage2D(gl.TEXTURE_2D, 0, gl.RGBA, largura, altura, 0, gl.RGBA, gl.UNSIGNED_BYTE, null); // vazia
-        gl.texParameteri(gl.TEXTURE_2D, gl.TEXTURE_WRAP_S, gl.CLAMP_TO_EDGE);   // nao repete nas bordas
+        gl.texImage2D(gl.TEXTURE_2D, 0, gl.RGBA, largura, altura, 0, gl.RGBA, gl.UNSIGNED_BYTE, null);
+        gl.texParameteri(gl.TEXTURE_2D, gl.TEXTURE_WRAP_S, gl.CLAMP_TO_EDGE);
         gl.texParameteri(gl.TEXTURE_2D, gl.TEXTURE_WRAP_T, gl.CLAMP_TO_EDGE);
-        gl.texParameteri(gl.TEXTURE_2D, gl.TEXTURE_MIN_FILTER, gl.LINEAR);      // sem mipmap (igual o shadow map)
+        gl.texParameteri(gl.TEXTURE_2D, gl.TEXTURE_MIN_FILTER, gl.LINEAR);   // sem mipmap
         gl.texParameteri(gl.TEXTURE_2D, gl.TEXTURE_MAG_FILTER, gl.LINEAR);
 
-        // renderbuffer de profundidade: o teste de profundidade tambem precisa
-        // funcionar quando desenhamos no framebuffer
         let renderbuffer = gl.createRenderbuffer();
         gl.bindRenderbuffer(gl.RENDERBUFFER, renderbuffer);
         gl.renderbufferStorage(gl.RENDERBUFFER, gl.DEPTH_COMPONENT24, largura, altura);
 
-        // framebuffer: junta a textura (cor) e o renderbuffer (profundidade)
         let framebuffer = gl.createFramebuffer();
         gl.bindFramebuffer(gl.FRAMEBUFFER, framebuffer);
         gl.framebufferTexture2D(gl.FRAMEBUFFER, gl.COLOR_ATTACHMENT0, gl.TEXTURE_2D, textura, 0);
@@ -468,7 +394,6 @@
             console.error("Framebuffer incompleto!");
         }
 
-        // volta a desenhar na tela
         gl.bindFramebuffer(gl.FRAMEBUFFER, null);
         gl.bindRenderbuffer(gl.RENDERBUFFER, null);
 
@@ -476,7 +401,6 @@
                  largura: largura, altura: altura, unidade: unidade };
     }
 
-    // libera a memoria de um framebuffer (usado quando a janela muda de tamanho)
     function apagarFramebuffer(fbo) {
         gl.deleteFramebuffer(fbo.framebuffer);
         gl.deleteTexture(fbo.textura);
@@ -484,46 +408,25 @@
     }
 
     let fboTransparencia = criarFramebuffer(UNIDADE_TRANSPARENCIA);
+    let fboReflexo       = criarFramebuffer(UNIDADE_REFLEXO);
 
-    // =====================================================================
-    // 7. OBJETOS DA CENA
-    // Cada objeto = geometria (onde esta no buffer) + textura + modelMatrix.
-    // A modelMatrix dos objetos que giram e recalculada a cada quadro.
-    //
-    //  vista de cima:   PIRAMIDE (x=-3)  |VIDRO (x=0)|  CUBO (x=+3)
-    // =====================================================================
-    let chao = {
-        geo: geoChao, textura: UNIDADE_CHAO,
-        model: scale(10, 1, 10)                     // chao de 20 x 20 (de -10 a 10)
-    };
-    let piramide = {
-        geo: geoPiramide, textura: UNIDADE_TRIANGULO,
-        model: mat4()                               // calculada no render (gira)
-    };
-    let cubo = {
-        geo: geoCubo, textura: UNIDADE_QUADRADO,
-        model: mat4()                               // calculada no render (gira)
-    };
-    // vidro: quadrado 6 (largura) x 3 (altura), girado 90 graus em Y para ficar
-    // no plano x = 0 (normal apontando para +x), com a base encostada no chao
-    let vidro = {
-        geo: geoVidro, textura: UNIDADE_VIDRO,
-        model: mult(translate(0, 1.5, 0), mult(rotateY(90), scale(3, 1.5, 1)))
-    };
+    // ===================== 7. OBJETOS DA CENA =====================
+    // geometria + textura + modelMatrix.   Vista de cima: PIRAMIDE (x < 0) | VIDRO (x = 0) | CUBO (x > 0)
+    let chao     = { geo: geoChao,     textura: UNIDADE_CHAO,      model: scale(10, 1, 10) };   // 20 x 20
+    let piramide = { geo: geoPiramide, textura: UNIDADE_TRIANGULO, model: mat4() };             // calculada no render
+    let cubo     = { geo: geoCubo,     textura: UNIDADE_QUADRADO,  model: mat4() };             // calculada no render
+    // vidro 6 x 3, girado 90 graus em Y para ficar no plano x = 0, com a base no chao
+    let vidro    = { geo: geoVidro,    textura: UNIDADE_VIDRO,
+                     model: mult(translate(0, 1.5, 0), mult(rotateY(90), scale(3, 1.5, 1))) };
 
-    // todos os objetos "normais" da cena (o vidro fica separado porque ele
-    // tem um shader proprio e e desenhado so no passe final)
+    // o vidro fica fora da lista: tem shader proprio e so e desenhado no passe final
     let objetosCena = [chao, piramide, cubo];
 
-    // =====================================================================
-    // 8. LUZ (e locations dos uniforms)
-    // A camera fica na secao 9 (flyby).
-    // =====================================================================
-    const lightPosition  = vec3(0.0, 8.0, 5.0);   // luz em cima do vidro: ilumina os 2 lados
+    // ===================== 8. LUZ E LOCATIONS DOS UNIFORMS =====================
+    const lightPosition  = vec3(0.0, 8.0, 5.0);   // em cima do plano do vidro: ilumina os 2 lados igual
     const lightIntensity = vec3(1.0, 1.0, 1.0);
     const ambientLight   = vec3(0.3, 0.3, 0.3);
 
-    // posicoes (locations) dos uniforms no programaCena
     let modelMatrixLoc    = gl.getUniformLocation(programaCena, "modelMatrix");
     let vpMatrixLoc       = gl.getUniformLocation(programaCena, "vpMatrix");
     let textureMapLoc     = gl.getUniformLocation(programaCena, "textureMap");
@@ -534,45 +437,35 @@
     let shininessLoc      = gl.getUniformLocation(programaCena, "shininess");
     let clipPlaneLoc      = gl.getUniformLocation(programaCena, "clipPlane");
 
-    // posicoes (locations) dos uniforms no programaVidro
     let vidroModelLoc     = gl.getUniformLocation(programaVidro, "modelMatrix");
     let vidroVpLoc        = gl.getUniformLocation(programaVidro, "vpMatrix");
+    let vidroCamPosLoc    = gl.getUniformLocation(programaVidro, "camPos");
+    let transparenciaLoc  = gl.getUniformLocation(programaVidro, "transparencia");
+    let mapaReflexoLoc    = gl.getUniformLocation(programaVidro, "mapaReflexo");
     let mapaTranspLoc     = gl.getUniformLocation(programaVidro, "mapaTransparencia");
     let texturaVidroLoc   = gl.getUniformLocation(programaVidro, "texturaVidro");
+    let modoVidroLoc      = gl.getUniformLocation(programaVidro, "modoVidro");
 
-    // =====================================================================
-    // 9. CAMERA FLYBY
-    // A camera e guardada como: posicao + dois angulos.
-    //   yaw   = giro para os lados (em volta do eixo Y). yaw = 0 olha para -z
-    //   pitch = giro para cima/baixo. pitch = 0 olha reto (horizontal)
-    // A partir dos angulos calculamos a direcao para onde ela olha e montamos
-    // a matriz de visao com o lookAt do MV.js: lookAt(olho, olho + direcao, cima).
-    // =====================================================================
-    let camera = {
-        pos:   vec3(7.0, 4.0, 10.0),   // posicao inicial (ve o cubo, o vidro e a piramide)
-        yaw:   -35,                    // graus
-        pitch: -14                     // graus (negativo = olhando um pouco para baixo)
-    };
-    const VELOCIDADE   = 4.0;   // unidades por segundo (W/A/S/D/Q/E)
+    // ===================== 9. CAMERA FLYBY [R6] =====================
+    // Posicao + 2 angulos (yaw: para os lados, pitch: para cima/baixo).
+    // Matriz de visao: lookAt(olho, olho + direcao, cima) do MV.js.
+    let camera = { pos: vec3(7.0, 4.0, 10.0), yaw: -35, pitch: -14 };   // angulos em graus
+    const VELOCIDADE   = 4.0;   // unidades por segundo
     const VEL_GIRO     = 90;    // graus por segundo (setas)
     const SENSIB_MOUSE = 0.2;   // graus por pixel arrastado
 
-    // direcao para onde a camera olha (vetor unitario), a partir de yaw e pitch
-    // (coordenadas esfericas: o pitch "levanta" o vetor, o yaw "gira" ele em volta de Y)
+    // coordenadas esfericas: yaw = 0 e pitch = 0 olham para -z
     function direcaoCamera() {
         let y = radians(camera.yaw);
         let p = radians(camera.pitch);
-        return vec3(Math.cos(p) * Math.sin(y),
-                    Math.sin(p),
-                   -Math.cos(p) * Math.cos(y));
+        return vec3(Math.cos(p) * Math.sin(y), Math.sin(p), -Math.cos(p) * Math.cos(y));
     }
 
-    // ---------- TECLADO: guarda quais teclas estao apertadas ----------
     let teclas = {};
     window.addEventListener("keydown", function (e) { teclas[e.code] = true;  });
     window.addEventListener("keyup",   function (e) { teclas[e.code] = false; });
 
-    // ---------- MOUSE: arrastar com o botao apertado gira a camera ----------
+    // arrastar o mouse com o botao apertado gira a camera
     let arrastando = false, mouseX = 0, mouseY = 0;
     canvas.addEventListener("mousedown", function (e) {
         arrastando = true; mouseX = e.clientX; mouseY = e.clientY;
@@ -580,31 +473,28 @@
     window.addEventListener("mouseup", function () { arrastando = false; });
     window.addEventListener("mousemove", function (e) {
         if (!arrastando) return;
-        camera.yaw   += (e.clientX - mouseX) * SENSIB_MOUSE;   // mouse para o lado -> gira para o lado
-        camera.pitch -= (e.clientY - mouseY) * SENSIB_MOUSE;   // mouse para cima   -> olha para cima
+        camera.yaw   += (e.clientX - mouseX) * SENSIB_MOUSE;
+        camera.pitch -= (e.clientY - mouseY) * SENSIB_MOUSE;
         mouseX = e.clientX; mouseY = e.clientY;
     });
 
-    // move/gira a camera de acordo com as teclas. dt = segundos desde o ultimo quadro
-    // (multiplicar por dt deixa a velocidade igual em qualquer computador)
+    // dt = segundos desde o ultimo quadro: mesma velocidade em qualquer computador
     function atualizarCamera(dt) {
-        // girar com as setas
         if (teclas["ArrowLeft"])  camera.yaw   -= VEL_GIRO * dt;
         if (teclas["ArrowRight"]) camera.yaw   += VEL_GIRO * dt;
         if (teclas["ArrowUp"])    camera.pitch += VEL_GIRO * dt;
         if (teclas["ArrowDown"])  camera.pitch -= VEL_GIRO * dt;
-        // limita o pitch para nao "dar cambalhota" (em 90 graus a direcao fica
-        // paralela ao vetor "cima" e o lookAt nao funciona)
+        // em +-90 graus a direcao fica paralela ao "cima" e o lookAt quebra
         camera.pitch = Math.max(-89, Math.min(89, camera.pitch));
 
         let frente  = direcaoCamera();
-        let direita = normalize(cross(frente, vec3(0, 1, 0)));   // perpendicular a frente e ao "cima"
+        let direita = normalize(cross(frente, vec3(0, 1, 0)));
         let cima    = vec3(0, 1, 0);
 
         let passo = VELOCIDADE * dt;
-        if (teclas["ShiftLeft"] || teclas["ShiftRight"]) passo *= 3;   // Shift = mais rapido
+        if (teclas["ShiftLeft"] || teclas["ShiftRight"]) passo *= 3;
 
-        // flyby: W/S anda na direcao em que a camera OLHA (inclusive para cima/baixo)
+        // flyby: W/S anda para onde a camera olha (inclusive para cima/baixo)
         if (teclas["KeyW"]) camera.pos = add(camera.pos, mult( passo, frente));
         if (teclas["KeyS"]) camera.pos = add(camera.pos, mult(-passo, frente));
         if (teclas["KeyD"]) camera.pos = add(camera.pos, mult( passo, direita));
@@ -613,28 +503,22 @@
         if (teclas["KeyQ"]) camera.pos = add(camera.pos, mult(-passo, cima));
     }
 
-    // ---------- JANELA: se mudar de tamanho, o canvas acompanha ----------
+    // janela mudou de tamanho: canvas e framebuffers acompanham
     window.addEventListener("resize", function () {
         canvas.width  = window.innerWidth;
         canvas.height = window.innerHeight;
         gl.viewport(0, 0, canvas.width, canvas.height);
-        // o framebuffer precisa ter o tamanho da tela: apaga e cria de novo
         apagarFramebuffer(fboTransparencia);
+        apagarFramebuffer(fboReflexo);
         fboTransparencia = criarFramebuffer(UNIDADE_TRANSPARENCIA);
+        fboReflexo       = criarFramebuffer(UNIDADE_REFLEXO);
     });
 
-    // =====================================================================
-    // 10. CLIPPING PLANE
-    // O plano de corte e o proprio plano do vidro.
-    // =====================================================================
+    // ===================== 10. PLANO DO VIDRO: CLIPPING [R5] E REFLEXAO [R2] =====================
+    const SEM_CORTE = vec4(0, 0, 0, 1);   // 0x + 0y + 0z + 1 > 0 sempre: nao corta nada
 
-    // plano "desligado": 0*x + 0*y + 0*z + 1 = 1 > 0 para qualquer ponto -> nada e cortado
-    const SEM_CORTE = vec4(0, 0, 0, 1);
-
-    // calcula a equacao do plano do vidro no MUNDO, a partir da modelMatrix dele:
-    //  - um ponto do plano: o centro do quadrado (0,0,0) levado para o mundo
-    //  - a normal: a normal do quadrado (0,0,1) levada para o mundo (w = 0: so gira)
-    //  - d = -dot(normal, ponto)   (porque o ponto esta no plano: dot(n, p) + d = 0)
+    // plano do vidro no mundo: normal (0,0,1) e centro do quadrado levados pela
+    // modelMatrix; d = -dot(n, ponto), porque o centro esta no plano
     function planoDoVidro() {
         let centro = mult(vidro.model, vec4(0, 0, 0, 1));
         let n4     = mult(vidro.model, vec4(0, 0, 1, 0));
@@ -643,45 +527,74 @@
         return vec4(n[0], n[1], n[2], d);
     }
 
-    // distancia (com sinal) de um ponto ate o plano: a*x + b*y + c*z + d
     function distanciaAoPlano(plano, p) {
         return plano[0] * p[0] + plano[1] * p[1] + plano[2] * p[2] + plano[3];
     }
 
-    // modo de teste (tecla C): o que o clipping faz na TELA
-    //   0 = desligado (cena inteira)
-    //   1 = mantem o lado da camera       (e o que o passe de REFLEXO vai usar)
-    //   2 = mantem o lado de tras do vidro (e o que o passe de TRANSPARENCIA vai usar)
+    // espelha um ponto pelo plano: P' = P - 2 * distancia(P) * n   (escrita linha por linha, como o MV.js)
+    function matrizReflexao(plano) {
+        let a = plano[0], b = plano[1], c = plano[2], d = plano[3];
+        return mat4(
+            1 - 2*a*a,    -2*a*b,    -2*a*c,   -2*a*d,
+               -2*a*b, 1 - 2*b*b,    -2*b*c,   -2*b*d,
+               -2*a*c,    -2*b*c, 1 - 2*c*c,   -2*c*d,
+                    0,         0,         0,        1
+        );
+    }
+
+    // ===================== 11. CONTROLES (painel e teclas de teste) =====================
+    // tecla C: aplica o clipping na tela, para mostrar o que cada passe enxerga
     let modoClip = 0;
-    const NOMES_MODO_CLIP = [
-        "desligado (cena inteira)",
-        "mantem o lado da camera",
-        "mantem o lado de tras do vidro"
-    ];
+    const NOMES_MODO_CLIP = ["desligado (cena inteira)", "mantem o lado da camera", "mantem o lado de tras do vidro"];
+    // tecla V: mostra no vidro o resultado ou so a textura de um dos passes
+    let modoVidro = 0;
+    const NOMES_MODO_VIDRO = ["resultado", "so o reflexo (passe 1)", "so a transparencia (passe 2)"];
+
     window.addEventListener("keydown", function (e) {
-        if (e.code === "KeyC" && !e.repeat) {          // !e.repeat: segurar a tecla nao fica trocando
+        if (e.repeat) return;   // segurar a tecla nao fica trocando
+        if (e.code === "KeyC") {
             modoClip = (modoClip + 1) % 3;
             document.getElementById("textoModoClip").textContent = NOMES_MODO_CLIP[modoClip];
         }
+        if (e.code === "KeyV") {
+            modoVidro = (modoVidro + 1) % 3;
+            document.getElementById("textoModoVidro").textContent = NOMES_MODO_VIDRO[modoVidro];
+        }
     });
 
-    // =====================================================================
-    // 11. FUNCOES DE DESENHO
-    // =====================================================================
+    // sliders: [R3] transparencia = 1 - posicao (esquerda = transparente, direita = espelho);
+    // distancias = centro de cada objeto ate o vidro (em 0 o objeto atravessa o vidro
+    // e o clipping corta ele ao meio)
+    let sliderVidro        = document.getElementById("sliderVidro");
+    let sliderDistCubo     = document.getElementById("sliderDistCubo");
+    let sliderDistPiramide = document.getElementById("sliderDistPiramide");
+    let transparencia, distCubo, distPiramide;
 
-    // desenha UM objeto: manda a modelMatrix e a textura dele e chama drawArrays
+    function lerSliders() {
+        transparencia = 1 - parseFloat(sliderVidro.value);
+        distCubo      = parseFloat(sliderDistCubo.value);
+        distPiramide  = parseFloat(sliderDistPiramide.value);
+        document.getElementById("textoTransparencia").textContent = transparencia.toFixed(2);
+        document.getElementById("textoDistCubo").textContent      = distCubo.toFixed(1);
+        document.getElementById("textoDistPiramide").textContent  = distPiramide.toFixed(1);
+    }
+    for (let slider of [sliderVidro, sliderDistCubo, sliderDistPiramide]) {
+        slider.addEventListener("input", lerSliders);
+        // ao soltar, tira o foco: senao as setas moveriam o slider em vez da camera
+        slider.addEventListener("change", function () { slider.blur(); });
+    }
+    lerSliders();
+
+    // ===================== 12. FUNCOES DE DESENHO =====================
     function desenharObjeto(obj) {
         gl.uniformMatrix4fv(modelMatrixLoc, false, flatten(obj.model));
         gl.uniform1i(textureMapLoc, obj.textura);
         gl.drawArrays(gl.TRIANGLES, obj.geo.inicio, obj.geo.total);
     }
 
-    // desenha a CENA INTEIRA vista por uma camera (vp) que esta em "olho",
-    // cortada pelo clipping plane "plano".
-    // Repare: desenha TODOS os objetos, sempre. Nao existe "if" escolhendo
-    // objeto: quem decide o que aparece e o plano, pixel a pixel, no shader.
-    // Essa mesma funcao e chamada em varios passes (framebuffers e tela),
-    // mudando so a camera e o plano.
+    // [R5] desenha TODOS os objetos, sempre: nenhum "if" escolhe objeto. Quem decide
+    // o que aparece e o clipPlane, pixel a pixel. Chamada nos 3 passes, mudando so
+    // a camera (vp, olho) e o plano.
     function desenharCena(vp, olho, plano) {
         gl.useProgram(programaCena);
         gl.uniformMatrix4fv(vpMatrixLoc, false, flatten(vp));
@@ -697,89 +610,86 @@
         }
     }
 
-    // desenha o VIDRO com o programa proprio dele, lendo a textura do
-    // framebuffer de transparencia
-    function desenharVidro(vp) {
+    // vidro: le as texturas dos passes 1 e 2 e a textura padrao dele
+    function desenharVidro(vp, olho) {
         gl.useProgram(programaVidro);
         gl.uniformMatrix4fv(vidroVpLoc,    false, flatten(vp));
         gl.uniformMatrix4fv(vidroModelLoc, false, flatten(vidro.model));
-        gl.uniform1i(mapaTranspLoc,   UNIDADE_TRANSPARENCIA);   // le a unidade 4 (framebuffer)
-        gl.uniform1i(texturaVidroLoc, vidro.textura);           // le a unidade 3 (metal.jpg)
+        gl.uniform3fv(vidroCamPosLoc, flatten(olho));
+        gl.uniform1f(transparenciaLoc, transparencia);          // [R3]
+        gl.uniform1i(mapaReflexoLoc,  UNIDADE_REFLEXO);         // [R2] textura do passe 1
+        gl.uniform1i(mapaTranspLoc,   UNIDADE_TRANSPARENCIA);   // [R2] textura do passe 2
+        gl.uniform1i(texturaVidroLoc, vidro.textura);           // [R4]
+        gl.uniform1i(modoVidroLoc,    modoVidro);
         gl.drawArrays(gl.TRIANGLES, vidro.geo.inicio, vidro.geo.total);
     }
 
-    // =====================================================================
-    // 12. LOOP DE DESENHO
-    // =====================================================================
-    let angulo = 0;          // rotacao dos objetos (em graus)
-    let ultimoTempo = 0;     // instante do quadro anterior (em milissegundos)
+    // ===================== 13. LOOP DE DESENHO =====================
+    let angulo = 0;
+    let ultimoTempo = 0;
 
-    // o requestAnimationFrame chama render passando o "tempo" atual em ms
     let render = function (tempo) {
-        // ---------- tempo desde o ultimo quadro ----------
-        let dt = (tempo - ultimoTempo) / 1000;   // em segundos
+        let dt = (tempo - ultimoTempo) / 1000;
         ultimoTempo = tempo;
-        if (dt > 0.1) dt = 0.1;                  // evita "pulo" se a aba ficou parada
+        if (dt > 0.1) dt = 0.1;   // evita "pulo" se a aba ficou parada
 
-        // ---------- camera ----------
+        // ----- camera -----
         atualizarCamera(dt);
         let camPos = camera.pos;
         let viewMatrix = lookAt(camPos, add(camPos, direcaoCamera()), vec3(0, 1, 0));
         let projectionMatrix = perspective(45, canvas.width / canvas.height, 0.1, 100);
-        let vpMatrix = mult(projectionMatrix, viewMatrix);   // projecao * visao
+        let vpMatrix = mult(projectionMatrix, viewMatrix);
 
-        // ---------- atualiza a animacao ----------
-        angulo = (angulo + 30 * dt) % 360;      // 30 graus por segundo
-        // cubo: lado 2 * 0.75 = 1.5; sobe 0.75 para encostar no chao; gira em Y
-        cubo.model = mult(translate(3, 0.75, 0), mult(rotateY(angulo), scale(0.75, 0.75, 0.75)));
-        // piramide: base 1.8 x 1.8, altura 1.8; gira no sentido contrario
-        piramide.model = mult(translate(-3, 0, 0), mult(rotateY(-angulo), scale(0.9, 0.9, 0.9)));
+        // ----- animacao: os objetos giram; a distancia ate o vidro vem dos sliders -----
+        angulo = (angulo + 30 * dt) % 360;
+        cubo.model     = mult(translate( distCubo,     0.75, 0), mult(rotateY( angulo), scale(0.75, 0.75, 0.75)));
+        piramide.model = mult(translate(-distPiramide, 0,    0), mult(rotateY(-angulo), scale(0.9, 0.9, 0.9)));
 
-        // ---------- clipping plane ----------
+        // ----- planos de corte -----
+        // a normal do plano passa a apontar sempre para o lado da camera, assim o vidro
+        // funciona dos 2 lados (o "if" escolhe a orientacao do plano, nao objetos)
         let plano = planoDoVidro();
-        // de que lado do vidro a camera esta? (o vidro funciona dos 2 lados)
-        // vira o plano para a normal apontar SEMPRE para o lado da camera.
-        // (este "if" escolhe a orientacao do plano, nao escolhe objetos)
         let lado = (distanciaAoPlano(plano, camPos) >= 0) ? 1 : -1;
-        let planoLadoCamera = mult(lado, plano);              // mantem o lado da camera
-        let planoLadoOposto = mult(-1, planoLadoCamera);      // mantem o lado de tras do vidro
+        let planoLadoCamera = mult(lado, plano);
+        let planoLadoOposto = mult(-1, planoLadoCamera);
 
-        // plano usado na tela, de acordo com o modo de teste (tecla C)
-        let planoTela = SEM_CORTE;
-        if (modoClip === 1) planoTela = planoLadoCamera;
+        let planoTela = SEM_CORTE;                          // normal: tela sem corte
+        if (modoClip === 1) planoTela = planoLadoCamera;    // teste (tecla C)
         if (modoClip === 2) planoTela = planoLadoOposto;
 
-        // =================================================================
-        // PASSE 1: REFLEXO -> framebuffer        (vai ser feito na etapa 7)
-        // =================================================================
+        // ----- PASSE 1: REFLEXO -> framebuffer [R2] -----
+        // A cena e espelhada pelo vidro (R) e vista pela mesma camera: vp = P * V * R.
+        // O clipping deixa so o lado da camera (o espelho nao reflete o que esta atras dele).
+        // O especular usa a camera espelhada, porque o reflexo e a cena vista de la.
+        let R = matrizReflexao(plano);
+        let vpReflexo = mult(vpMatrix, R);
+        let olhoRefletido4 = mult(R, vec4(camPos[0], camPos[1], camPos[2], 1));
+        let olhoRefletido  = vec3(olhoRefletido4[0], olhoRefletido4[1], olhoRefletido4[2]);
 
-        // =================================================================
-        // PASSE 2: TRANSPARENCIA -> framebuffer
-        // Mesma camera da tela, mas o clipping deixa SO o que esta atras do
-        // vidro. O resultado (uma "foto" do outro lado) fica na textura
-        // fboTransparencia.textura, unidade 4.
-        // =================================================================
+        gl.bindFramebuffer(gl.FRAMEBUFFER, fboReflexo.framebuffer);
+        gl.viewport(0, 0, fboReflexo.largura, fboReflexo.altura);
+        gl.clear(gl.COLOR_BUFFER_BIT | gl.DEPTH_BUFFER_BIT);
+        desenharCena(vpReflexo, olhoRefletido, planoLadoCamera);
+
+        // ----- PASSE 2: TRANSPARENCIA -> framebuffer [R2] -----
+        // Mesma camera da tela; o clipping deixa so o que esta atras do vidro.
         gl.bindFramebuffer(gl.FRAMEBUFFER, fboTransparencia.framebuffer);
         gl.viewport(0, 0, fboTransparencia.largura, fboTransparencia.altura);
         gl.clear(gl.COLOR_BUFFER_BIT | gl.DEPTH_BUFFER_BIT);
+        desenharCena(vpMatrix, camPos, planoLadoOposto);
 
-        desenharCena(vpMatrix, camPos, planoLadoOposto);   // todos os objetos, cortados pelo plano
-
-        // =================================================================
-        // PASSE 3: TELA
-        // A cena inteira (sem corte) e, por cima, o vidro com o shader proprio.
-        // =================================================================
-        gl.bindFramebuffer(gl.FRAMEBUFFER, null);   // null = tela
+        // ----- PASSE 3: TELA -----
+        // Cena inteira (sem corte) e o vidro juntando as texturas dos passes 1 e 2.
+        gl.bindFramebuffer(gl.FRAMEBUFFER, null);
         gl.viewport(0, 0, canvas.width, canvas.height);
         gl.clear(gl.COLOR_BUFFER_BIT | gl.DEPTH_BUFFER_BIT);
+        desenharCena(vpMatrix, camPos, planoTela);
+        desenharVidro(vpMatrix, camPos);
 
-        desenharCena(vpMatrix, camPos, planoTela);   // chao, piramide e cubo (todos, sempre)
-        desenharVidro(vpMatrix);                     // vidro lendo a textura do passe 2
-
-        requestAnimationFrame(render);    // pede o proximo quadro
+        requestAnimationFrame(render);
     }
 
-    // so configura as texturas e comeca a desenhar quando as imagens terminarem de carregar
+    // so comeca depois que as imagens das texturas carregarem
     window.onload = function () {
         configurarTextura("texChao",      UNIDADE_CHAO);
         configurarTextura("texTriangulo", UNIDADE_TRIANGULO);
